@@ -1,0 +1,5 @@
+environment:
+    name: test
+    url: http://test.com
+    username: test
+    password: test
