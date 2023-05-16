@@ -1,56 +1,83 @@
-use serde::{Deserialize, Serialize};
+use clap::Parser;
+use config::Config;
 use std::collections::HashMap;
-use std::env;
-use std::fs::read_to_string;
+use std::path::Path;
+use std::process::Command;
 
-#[derive(Debug, Serialize, Deserialize)]
-struct ConfigFile {
-    environment: HashMap<String, String>,
+#[derive(Parser, Debug)]
+#[command(author, about, version, long_about = None)]
+struct Args {
+    cmd: Option<String>,
+    #[arg(short, long)]
+    file: Option<String>,
+    #[arg(short, long)]
+    env: Option<Vec<String>>,
+}
+
+fn parse_dot_env_file(file: String) -> HashMap<String, String> {
+    dotenvy::from_filename(file).ok();
+    let env_variables: HashMap<String, String> = dotenvy::vars().collect();
+
+    env_variables
+}
+
+fn parse_env_file(file: String) -> HashMap<String, String> {
+    let ext = Path::new(file.as_str())
+        .extension()
+        .unwrap()
+        .to_str()
+        .unwrap();
+
+    match ext {
+        "env" => parse_dot_env_file(file),
+        "yaml" | "yml" | "json" | "json5" | "toml" | "ron" | "ini" => {
+            let settings = Config::builder()
+                .add_source(config::File::with_name(file.as_str()))
+                .add_source(config::Environment::default())
+                .build()
+                .unwrap();
+
+            settings.try_deserialize().unwrap()
+        }
+        _ => {
+            println!("Unsupported file type");
+            HashMap::new()
+        }
+    }
 }
 
 fn main() {
-    let args: Vec<String> = env::args().collect();
-    let mut options: HashMap<String, String> = HashMap::new();
+    let args = Args::parse();
+    let env_file = args.file;
     let mut input_env_variables: HashMap<String, String> = HashMap::new();
-    let mut option_key: Option<String> = None;
-    let mut env_key: Option<String> = None;
-    let mut config_file: String = String::from("./config.json");
 
-    for i in 1..args.len() {
-        let arg = &args[i];
-        let mut chars = arg.chars();
-        let value = chars.clone().collect::<String>();
+    if env_file.is_some() {
+        input_env_variables = parse_env_file(env_file.unwrap());
+    }
 
-        if value.contains("--") && env_key.is_none() {
-            env_key = Some(value.replace("--", ""));
-            option_key = None;
-        } else if value.contains("-") && option_key.is_none() {
-            option_key = Some(value.replace("-", ""));
-            env_key = None;
-        } else if option_key.is_some() {
-            options.insert(option_key.clone().unwrap(), value);
-            option_key = None;
-            env_key = None;
-        } else if env_key.is_some() {
-            input_env_variables.insert(env_key.clone().unwrap(), value);
-            option_key = None;
-            env_key = None;
+    if args.env.is_some() {
+        for env in args.env.unwrap() {
+            let env_split: Vec<&str> = env.split('=').collect();
+            input_env_variables.insert(
+                env_split[0].to_string(),
+                env_split[1..].join("=").to_string(),
+            );
         }
     }
 
-    if options.contains_key("config") {
-        config_file = options.get("config").unwrap().clone();
-    }
+    match args.cmd {
+        Some(cmd) => {
+            Command::new(cmd)
+                .envs(input_env_variables)
+                .spawn()
+                .map_err(|e| println!("Failed to execute process: {}", e))
+                .expect("Failed to execute command");
 
-    if config_file.contains(".yaml") {
-        let config_contents = read_to_string(config_file).unwrap();
-        let yaml_config: ConfigFile = serde_yaml::from_str(&config_contents).unwrap();
-
-        for (key, value) in yaml_config.environment {
-            input_env_variables.insert(key, value);
+            return;
+        }
+        None => {
+            println!("No command provided");
+            return;
         }
     }
-
-    println!("{:?}", options);
-    println!("{:?}", input_env_variables);
 }
